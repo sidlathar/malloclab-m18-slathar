@@ -77,6 +77,10 @@ typedef struct block
 {
     /* Header contains size + allocation flag */
     word_t header;
+    
+    /* next and prev pointers for free block */
+    word_t* next;
+    word_t* prev;
     /*
      * We don't know how big the payload will be.  Declaring it as an
      * array of size 0 allows computing its starting address using
@@ -89,10 +93,11 @@ typedef struct block
      */
 } block_t;
 
-
 /* Global variables */
 /* Pointer to first block */
 static block_t *heap_start = NULL;
+/* pointer to first free block */
+static  block_t* free_list_start = NULL;
 
 bool mm_checkheap(int lineno);
 
@@ -123,6 +128,9 @@ static block_t *find_next(block_t *block);
 static word_t *find_prev_footer(block_t *block);
 static block_t *find_prev(block_t *block);
 
+static void add_to_front(block_t* block);
+static void change_connections(block_t* block);
+static block_t *find_free_fit(size_t asize);
 
 /*
  * <what does mm_init do?>
@@ -147,6 +155,14 @@ bool mm_init(void)
     {
         return false;
     }
+    free_list_start = (block_t *) (&(start[1]) + wsize);
+
+    /* Initialize free list */
+    write_header(free_list_start, chunksize, false);
+    write_footer(free_list_start, chunksize, false);
+    free_list_start -> next = NULL;
+    free_list_start -> prev = NULL;
+
     return true;
 }
 
@@ -176,7 +192,7 @@ void *malloc(size_t size)
     asize = round_up(size + dsize, dsize);
 
     // Search the free list for a fit
-    block = find_fit(asize);
+    block = find_free_fit(asize);
 
     // If no fit is found, request more memory, and then and place the block
     if (block == NULL)
@@ -207,7 +223,7 @@ void free(void *bp)
         return;
     }
 
-    block_t *block = payload_to_header(bp);
+    block_t *block = payload_to_header(bp); //CHANGE THIS
     size_t size = get_size(block);
 
     write_header(block, size, false);
@@ -312,6 +328,52 @@ static block_t *extend_heap(size_t size)
     return coalesce(block);
 }
 
+static void add_to_front(block_t* block)
+{
+    /* change next and prev pointers for new free_list_root */
+        block_t* temp = free_list_start;
+
+        block -> next = free_list_start;
+        block -> prev = NULL;
+        free_list_start -> prev = block;
+        free_list_start = block;
+        free_list_start -> next = temp;
+
+        return;
+}
+
+
+static void change_connections(block_t* block)
+{
+    if(block -> prev != NULL)
+        {
+            (block_t *)((block_t *)(block -> prev) -> next) = (block_t *)(block -> next);
+            if(block -> next != NULL)
+            {
+                (block_t *)(block -> next) -> prev = block -> prev;
+            }
+            else
+            {
+                (block_t *)(block -> prev) -> next = NULL;
+            }
+        }
+        else /* NULL FREE1 FREE */ //is free list start
+        {
+            if(block -> next != NULL)
+            {
+                (block_t *)(block -> next) -> prev = NULL;
+                free_list_start = block -> next;
+            }
+            else
+            {
+                //no elements in free list remaining
+                free_list_start = NULL;
+            }
+        }
+    return;
+}
+
+
 /*
  * <what does coalesce do?>
  */
@@ -327,30 +389,53 @@ static block_t *coalesce(block_t * block)
     if (prev_alloc && next_alloc)              // Case 1
     {
         return block;
+
+
+
+        //add to root of free list
     }
 
     else if (prev_alloc && !next_alloc)        // Case 2
     {
+        /* restore connections before splice */
+        change_connections(block_next);
+
         size += get_size(block_next);
         write_header(block, size, false);
         write_footer(block, size, false);
+
+        /* change next and prev pointers for new free_list_root */
+        add_to_front(block);
     }
 
     else if (!prev_alloc && next_alloc)        // Case 3
     {
+        /* restore connections before splice */
+        change_connections(block_prev);
+
+        /* write header and footer for new merged block */
         size += get_size(block_prev);
         write_header(block_prev, size, false);
         write_footer(block_prev, size, false);
         block = block_prev;
+
+        /* change next and prev pointers for new free_list_root */
+        add_to_front(block);
     }
 
     else                                        // Case 4
     {
+        /* restore connections before splice */
+        change_connections(block_prev);
+        change_connections(block_next);  
+
         size += get_size(block_next) + get_size(block_prev);
         write_header(block_prev, size, false);
         write_footer(block_prev, size, false);
-
         block = block_prev;
+
+        /* change next and prev pointers for new free_list_root */
+        add_to_front(block);
     }
     return block;
 }
@@ -398,6 +483,26 @@ static block_t *find_fit(size_t asize)
     }
     return NULL; // no fit found
 }
+
+/*
+ * <what does find_fit do?>
+ */
+static block_t *find_free_fit(size_t asize)
+{
+    block_t *block;
+
+    for (block = free_list_start; (block != NULL); block = block -> next)
+    {
+
+        if (!(get_alloc(block)) && (asize <= get_size(block)))
+        {
+            return block;
+        }
+    }
+    return NULL; // no fit found
+}
+
+
 
 /* 
  * <what does your heap checker do?>
