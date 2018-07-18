@@ -337,11 +337,6 @@ static block_t *extend_heap(size_t size)
 
     // Coalesce in case the previous block was free
 
-    if(free_list_start == NULL)
-    {
-    free_list_start = block;
-    }
-
     return coalesce(block);
 }
 
