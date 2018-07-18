@@ -162,25 +162,13 @@ bool mm_init(void)
     // Heap starts with first "block header", currently the epilogue footer
     heap_start = (block_t *) &(start[1]);
 
-
-
     // Extend the empty heap with a free block of chunksize bytes
     if (extend_heap(chunksize) == NULL)
     {
         return false;
     }
-    
 
-
-    free_list_start = NULL; //(block_t *) (&(start[1]) + wsize);
-
-    // /* Initialize free list */
-    // write_header(free_list_start, chunksize, false);
-    // write_footer(free_list_start, chunksize, false);
-
-    // free_list_start -> next = NULL;
-    // free_list_start -> prev = NULL;
-     
+    free_list_start = NULL;
 
     return true;
 }
@@ -337,7 +325,7 @@ static block_t *extend_heap(size_t size)
 
    
     // Initialize free block header/footer 
-    block_t *block = (block_t*)bp; //payload_to_header(bp);
+    block_t *block =  payload_to_header(bp);
   
     write_header(block, size, false);
    
@@ -368,11 +356,10 @@ static void add_to_front(block_t* block)
         }
         else
         {
-            
-            block_t* temp = free_list_start;
-
+            //assert(free_list_start -> prev == NULL);
             block -> next = free_list_start;
-            block -> prev = free_list_start -> prev;
+            block -> prev = free_list_start -> prev; //Should be null
+            //assert(block -> prev == NULL);
             free_list_start -> prev = block;
             free_list_start = block;
         }
@@ -391,20 +378,14 @@ static void change_connections(block_t* block)
             {
                 block -> next -> prev = block -> prev;
             }
-            else
-            {
-                block -> prev -> next = NULL;
-            }
         }
         else /* NULL FREE1 FREE */ //is free list start
         {
             if(block -> next != NULL)
-            {
-                
-                assert(block -> next  != NULL);
-              
+            { 
                 //block -> next -> prev = NULL;
                 free_list_start = block -> next;
+                free_list_start -> prev = NULL;
             }
             else
             {
@@ -430,9 +411,8 @@ static block_t *coalesce(block_t * block)
 
     if (prev_alloc && next_alloc)              // Case 1
     {
-        return block;
-
         add_to_front(block);
+        return block;
     }
 
     else if (prev_alloc && !next_alloc)        // Case 2
@@ -482,16 +462,18 @@ static void place(block_t *block, size_t asize)
         block_t *block_next;
         write_header(block, asize, true);
         write_footer(block, asize, true);
+        change_connections(block);
 
         block_next = find_next(block);
         write_header(block_next, csize-asize, false);
         write_footer(block_next, csize-asize, false);
+        add_to_front(block_next);
     }
-
     else
     { 
         write_header(block, csize, true);
         write_footer(block, csize, true);
+        change_connections(block);
     }
 }
 
