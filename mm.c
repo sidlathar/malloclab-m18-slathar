@@ -78,15 +78,26 @@ typedef struct block
     /* Header contains size + allocation flag */
     word_t header;
     
-    /* next and prev pointers for free block */
-    struct block* next;
-    struct block* prev;
-    /*
-     * We don't know how big the payload will be.  Declaring it as an
-     * array of size 0 allows computing its starting address using
-     * pointer notation.
-     */
-    char payload[0];
+    /* Pointers were causing alignment issues so putting them in a union with
+     * payload will allow them to never co-exist since payload will always be greater then 
+     or equal to 4*wsize */
+    
+    union
+    {
+        /*
+        * We don't know how big the payload will be.  Declaring it as an
+        * array of size 0 allows computing its starting address using
+        * pointer notation.
+        */
+        char payload[0];
+        /* next and prev pointers for free block */
+        struct 
+        {
+            struct block* next;
+            struct block* prev;
+        };
+    };
+    
     /*
      * We can't declare the footer as part of the struct, since its starting
      * position is unknown
@@ -231,7 +242,7 @@ void free(void *bp)
         return;
     }
 
-    block_t *block = payload_to_header(bp); //CHANGE THIS
+    block_t *block = payload_to_header(bp); 
     size_t size = get_size(block);
 
     write_header(block, size, false);
@@ -360,11 +371,10 @@ static void add_to_front(block_t* block)
             
             block_t* temp = free_list_start;
 
-            block -> next = temp;
-            block -> prev = NULL;
+            block -> next = free_list_start;
+            block -> prev = free_list_start -> prev;
             free_list_start -> prev = block;
             free_list_start = block;
-            free_list_start -> next = temp;
         }
         
         return;
@@ -440,32 +450,22 @@ static block_t *coalesce(block_t * block)
 
     else if (!prev_alloc && next_alloc)        // Case 3
     {
-        /* restore connections before splice */
-        change_connections(block_prev);
-
         /* write header and footer for new merged block */
         size += get_size(block_prev);
         write_header(block_prev, size, false);
         write_footer(block_prev, size, false);
         block = block_prev;
-
-        /* change next and prev pointers for new free_list_root */
-        add_to_front(block);
     }
 
     else                                        // Case 4
     {
         /* restore connections before splice */
-        change_connections(block_prev);
         change_connections(block_next);  
 
         size += get_size(block_next) + get_size(block_prev);
         write_header(block_prev, size, false);
         write_footer(block_prev, size, false);
         block = block_prev;
-
-        /* change next and prev pointers for new free_list_root */
-        add_to_front(block);
     }
     return block;
 }
