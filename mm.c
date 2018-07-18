@@ -1,3 +1,4 @@
+/* SIDDHANTH LATHAR SLATHAR */
 /*
  ******************************************************************************
  *                               mm-baseline.c                                *
@@ -67,11 +68,12 @@
 typedef uint64_t word_t;
 static const size_t wsize = sizeof(word_t);   // word and header size (bytes)
 static const size_t dsize = 2*wsize;          // double word size (bytes)
-static const size_t min_block_size = 2*dsize; // Minimum block size
+static const size_t min_block_size = 16*dsize; // Minimum block size
 static const size_t chunksize = (1 << 12);    // requires (chunksize % 16 == 0)
 
 static const word_t alloc_mask = 0x1;
 static const word_t size_mask = ~(word_t)0xF;
+static const size_t threshold = 256;
 
 typedef struct block
 {
@@ -142,6 +144,7 @@ static block_t *find_prev(block_t *block);
 static void add_to_front(block_t* block);
 static void change_connections(block_t* block);
 static block_t *find_free_fit(size_t asize);
+static block_t *find_best_fit(size_t asize);
 
 /*
  * <what does mm_init do?>
@@ -199,7 +202,7 @@ void *malloc(size_t size)
     asize = round_up(size + dsize, dsize);
 
     // Search the free list for a fit
-    block = find_free_fit(asize);
+    block = find_best_fit(asize);
 
     // If no fit is found, request more memory, and then and place the block
     if (block == NULL)
@@ -237,7 +240,6 @@ void free(void *bp)
     write_footer(block, size, false);
 
     coalesce(block);
-
 }
 
 /*
@@ -336,7 +338,6 @@ static block_t *extend_heap(size_t size)
     write_header(block_next, 0, true);
 
     // Coalesce in case the previous block was free
-
     return coalesce(block);
 }
 
@@ -351,14 +352,12 @@ static void add_to_front(block_t* block)
         }
         else
         {
-            //assert(free_list_start -> prev == NULL);
+            
             block -> next = free_list_start;
             block -> prev = free_list_start -> prev; //Should be null
-            //assert(block -> prev == NULL);
             free_list_start -> prev = block;
             free_list_start = block;
         }
-        
         return;
 }
 
@@ -374,20 +373,20 @@ static void change_connections(block_t* block)
                 block -> next -> prev = block -> prev;
             }
         }
-        else /* NULL FREE1 FREE */ //is free list start
-        {
-            if(block -> next != NULL)
-            { 
-                //block -> next -> prev = NULL;
-                free_list_start = block -> next;
-                free_list_start -> prev = NULL;
-            }
-            else
-            {
-                //no elements in free list remaining
-                free_list_start = NULL;
-            }
+    else /* NULL FREE1 FREE */ //is free list start
+    {
+        if(block -> next != NULL)
+        { 
+            //block -> next -> prev = NULL;
+            free_list_start = block -> next;
+            free_list_start -> prev = NULL;
         }
+        else
+        {
+            //no elements in free list remaining
+            free_list_start = NULL;
+        }
+    }
     return;
 }
 
@@ -406,7 +405,10 @@ static block_t *coalesce(block_t * block)
 
     if (prev_alloc && next_alloc)              // Case 1
     {
+    
         add_to_front(block);
+        
+        
         return block;
     }
 
@@ -421,6 +423,7 @@ static block_t *coalesce(block_t * block)
 
         /* change next and prev pointers for new free_list_root */
         add_to_front(block);
+        
     }
 
     else if (!prev_alloc && next_alloc)        // Case 3
@@ -501,7 +504,7 @@ static block_t *find_free_fit(size_t asize)
     for (block = free_list_start; (block != NULL); block = block -> next)
     {
 
-        if (!(get_alloc(block)) && (asize <= get_size(block)))
+        if ((asize <= get_size(block)))
         {
             return block;
         }
@@ -509,6 +512,36 @@ static block_t *find_free_fit(size_t asize)
     return NULL; // no fit found
 }
 
+/*
+ * <what does find_fit do?>
+ */
+static block_t *find_best_fit(size_t asize)
+{
+    block_t *block;
+    block_t *best_fit = NULL;
+
+    size_t diff = 1;
+    size_t size;
+
+    for (block = free_list_start; (block != NULL); block = block -> next)
+    {
+        size = get_size(block);
+
+        if ((asize <= size))
+        {
+            if((size - asize <= diff) || diff == 1)
+            {
+                best_fit = block;
+                diff = size - asize;
+                if(diff <= threshold)
+                {
+                    return best_fit;
+                }
+            }
+        }
+    }
+    return best_fit; // no fit found
+}
 
 
 /* 
