@@ -68,12 +68,14 @@
 typedef uint64_t word_t;
 static const size_t wsize = sizeof(word_t);   // word and header size (bytes)
 static const size_t dsize = 2*wsize;          // double word size (bytes)
-static const size_t min_block_size = 16*dsize; // Minimum block size
+static const size_t min_block_size = 2*dsize; // Minimum block size
 static const size_t chunksize = (1 << 12);    // requires (chunksize % 16 == 0)
+//static const size_t threshold = 128;
+static const size_t NUM_LISTS = 16;
 
 static const word_t alloc_mask = 0x1;
 static const word_t size_mask = ~(word_t)0xF;
-static const size_t threshold = 256;
+
 
 typedef struct block
 {
@@ -110,7 +112,7 @@ typedef struct block
 /* Pointer to first block */
 static block_t *heap_start = NULL;
 /* pointer to first free block */
-static  block_t* free_list_start = NULL;
+static  block_t* free_list_start[NUM_LISTS];
 
 bool mm_checkheap(int lineno);
 
@@ -141,10 +143,12 @@ static block_t *find_next(block_t *block);
 static word_t *find_prev_footer(block_t *block);
 static block_t *find_prev(block_t *block);
 
-static void add_to_front(block_t* block);
-static void change_connections(block_t* block);
-static block_t *find_free_fit(size_t asize);
-static block_t *find_best_fit(size_t asize);
+static void add_to_front(block_t* block, size_t place_index);
+static void change_connections(block_t* block, size_t change_index);
+// static block_t *find_free_fit(size_t asize);
+// static block_t *find_best_fit(size_t asize);
+static block_t *find_seg_fit(size_t asize);
+static size_t find_best_index(size_t asize);
 
 /*
  * <what does mm_init do?>
@@ -171,7 +175,11 @@ bool mm_init(void)
         return false;
     }
 
-    free_list_start = NULL;
+    /* Initialize Free Lists */
+    for(size_t list_index = 0; list_index < NUM_LISTS; list_index++)
+    {
+        free_list_start[list_index] = NULL;
+    }
 
     return true;
 }
@@ -202,7 +210,7 @@ void *malloc(size_t size)
     asize = round_up(size + dsize, dsize);
 
     // Search the free list for a fit
-    block = find_best_fit(asize);
+    block = find_seg_fit(asize);
 
     // If no fit is found, request more memory, and then and place the block
     if (block == NULL)
@@ -341,52 +349,67 @@ static block_t *extend_heap(size_t size)
     return coalesce(block);
 }
 
-static void add_to_front(block_t* block)
+// static void add_to_front(block_t* block, size_t place_index)
+// {
+//     //block_t* list = free_list_start[place_index];
+
+//     /* change next and prev pointers for new free_list_root */
+//         if(free_list_start[place_index] == NULL)
+//         {
+//             free_list_start[place_index] = block;
+//             free_list_start[place_index] -> prev = NULL;
+//             free_list_start[place_index] -> next = NULL;
+//         }
+//         else
+//         {
+//             block -> next = free_list_start[place_index];
+//             block -> prev = free_list_start[place_index] -> prev; //Should be null
+//             free_list_start[place_index] -> prev = block;
+//             free_list_start[place_index] = block;
+//         }
+//         return;
+// }
+
+static void add_to_front(block_t* block, size_t place_index)
 {
+    //block_t* list = free_list_start[place_index];
+
     /* change next and prev pointers for new free_list_root */
-        if(free_list_start == NULL)
+        if(free_list_start[place_index] == NULL)
         {
-            free_list_start = block;
-            free_list_start -> prev = NULL;
-            free_list_start -> next = NULL;
+            free_list_start[place_index] = block;
+            free_list_start[place_index] -> next = block;
+            free_list_start[place_index] -> prev = block;
         }
         else
         {
-            
-            block -> next = free_list_start;
-            block -> prev = free_list_start -> prev; //Should be null
-            free_list_start -> prev = block;
-            free_list_start = block;
+            block -> next = free_list_start[place_index];
+            block -> prev = free_list_start[place_index] -> prev; 
+            free_list_start[place_index] -> prev -> next  = block;
+            free_list_start[place_index] -> prev = block;
         }
         return;
 }
 
 
-static void change_connections(block_t* block)
+static void change_connections(block_t* block, size_t change_index)
 {
-    if(block == NULL) return;
-    if(block -> prev != NULL)
-        {
-            block -> prev -> next = block -> next;
-            if(block -> next != NULL)
-            {
-                block -> next -> prev = block -> prev;
-            }
-        }
-    else /* NULL FREE1 FREE */ //is free list start
+    //block_t* list = free_list_start[change_index];
+
+    if(block -> prev == block && block-> next == block)
     {
-        if(block -> next != NULL)
-        { 
-            //block -> next -> prev = NULL;
-            free_list_start = block -> next;
-            free_list_start -> prev = NULL;
-        }
-        else
-        {
-            //no elements in free list remaining
-            free_list_start = NULL;
-        }
+        free_list_start[change_index] = NULL;
     }
+    else
+    {
+        if(block == free_list_start[change_index])
+        {
+            free_list_start[change_index] = block -> next;
+        }
+        block -> next -> prev = block -> prev;
+        block -> prev -> next = block -> next;
+    }
+    
     return;
 }
 
@@ -403,11 +426,12 @@ static block_t *coalesce(block_t * block)
     bool next_alloc = get_alloc(block_next);
     size_t size = get_size(block);
 
+    size_t merge_index;
+    merge_index = find_best_index(size);
+
     if (prev_alloc && next_alloc)              // Case 1
     {
-    
-        add_to_front(block);
-        
+        add_to_front(block, merge_index);
         
         return block;
     }
@@ -415,35 +439,53 @@ static block_t *coalesce(block_t * block)
     else if (prev_alloc && !next_alloc)        // Case 2
     {
         /* restore connections before splice */
-        change_connections(block_next);
+        size_t next_size = get_size(block_next);
+        size_t next_index = find_best_index(next_size);
+        change_connections(block_next, next_index);
 
         size += get_size(block_next);
         write_header(block, size, false);
         write_footer(block, size, false);
 
         /* change next and prev pointers for new free_list_root */
-        add_to_front(block);
-        
+        size_t merge_index = find_best_index(size);
+        add_to_front(block, merge_index);
     }
 
     else if (!prev_alloc && next_alloc)        // Case 3
     {
+        size_t prev_size = get_size(block_prev);
+        size_t prev_index = find_best_index(prev_size);
+        change_connections(block_prev, prev_index);
+
         /* write header and footer for new merged block */
         size += get_size(block_prev);
         write_header(block_prev, size, false);
         write_footer(block_prev, size, false);
         block = block_prev;
+
+        size_t merge_index = find_best_index(size);
+        add_to_front(block, merge_index);
     }
 
     else                                        // Case 4
     {
         /* restore connections before splice */
-        change_connections(block_next);  
+        size_t next_size = get_size(block_next);
+        size_t next_index = find_best_index(next_size);
+        change_connections(block_next, next_index);
 
+        size_t prev_size = get_size(block_prev);
+        size_t prev_index = find_best_index(prev_size);
+        change_connections(block_prev, prev_index);
+         
         size += get_size(block_next) + get_size(block_prev);
         write_header(block_prev, size, false);
         write_footer(block_prev, size, false);
         block = block_prev;
+
+        size_t merge_index = find_best_index(size);
+        add_to_front(block, merge_index);
     }
     return block;
 }
@@ -454,24 +496,26 @@ static block_t *coalesce(block_t * block)
 static void place(block_t *block, size_t asize)
 {
     size_t csize = get_size(block);
+    size_t list_index = find_best_index(csize);
 
     if ((csize - asize) >= min_block_size)
     {
         block_t *block_next;
         write_header(block, asize, true);
         write_footer(block, asize, true);
-        change_connections(block);
+        change_connections(block, list_index);
 
         block_next = find_next(block);
         write_header(block_next, csize-asize, false);
         write_footer(block_next, csize-asize, false);
-        add_to_front(block_next);
+        list_index = find_best_index(csize - asize);
+        add_to_front(block_next, list_index);
     }
     else
     { 
         write_header(block, csize, true);
         write_footer(block, csize, true);
-        change_connections(block);
+        change_connections(block, list_index);
     }
 }
 
@@ -494,55 +538,70 @@ static block_t *find_fit(size_t asize)
     return NULL; // no fit found
 }
 
+// /*
+//  * <what does find_fit do?>
+//  */
+// static block_t *find_best_fit(size_t asize)
+// {
+//     block_t *block;
+//     block_t *best_fit = NULL;
+
+//     size_t diff = 1;
+//     size_t size;
+
+//     for (block = free_list_start; (block != NULL); block = block -> next)
+//     {
+//         size = get_size(block);
+
+//         if ((asize <= size))
+//         {
+//             if((size - asize <= diff) || diff == 1)
+//             {
+//                 best_fit = block;
+//                 diff = size - asize;
+//                 if(diff <= threshold)
+//                 {
+//                     return best_fit;
+//                 }
+//             }
+//         }
+//     }
+//     return best_fit; // no fit found
+// }
+
+
 /*
  * <what does find_fit do?>
  */
-static block_t *find_free_fit(size_t asize)
+static block_t *find_seg_fit(size_t asize)
 {
+    size_t min_start_index = find_best_index(asize);
+
     block_t *block;
 
-    for (block = free_list_start; (block != NULL); block = block -> next)
+    for(size_t list_index = min_start_index; list_index < NUM_LISTS; list_index++)
     {
-
-        if ((asize <= get_size(block)))
+        block = free_list_start[list_index];
+        if(block == NULL)
         {
-            return block;
+            continue;
         }
+        if ((asize <= get_size(block)))
+            {
+                return block;
+            }
+
+        for (block = free_list_start[list_index] -> next; (block != NULL && block != free_list_start[list_index]); block = block -> next)
+        {
+            if ((asize <= get_size(block)))
+            {
+                return block;
+            }
+        }
+
     }
     return NULL; // no fit found
 }
-
-/*
- * <what does find_fit do?>
- */
-static block_t *find_best_fit(size_t asize)
-{
-    block_t *block;
-    block_t *best_fit = NULL;
-
-    size_t diff = 1;
-    size_t size;
-
-    for (block = free_list_start; (block != NULL); block = block -> next)
-    {
-        size = get_size(block);
-
-        if ((asize <= size))
-        {
-            if((size - asize <= diff) || diff == 1)
-            {
-                best_fit = block;
-                diff = size - asize;
-                if(diff <= threshold)
-                {
-                    return best_fit;
-                }
-            }
-        }
-    }
-    return best_fit; // no fit found
-}
-
 
 /* 
  * <what does your heap checker do?>
@@ -564,6 +623,76 @@ bool mm_checkheap(int line)
                 // will not warn you about an unused variable.
     return true;
 
+}
+
+static size_t find_best_index(size_t asize)
+{
+    size_t index = 0;
+    if(asize <= 32)
+    {
+        index = 0;
+    }
+    else if(asize <= 48)
+    {
+        index = 1;
+    }
+    else if(asize <= 64)
+    {
+        index = 2;
+    }
+    else if(asize <= 72)
+    {
+        index = 3;
+    }
+    else if(asize <= 96)
+    {
+        index = 4;
+    }
+    else if(asize <= 128)
+    {
+        index = 5;
+    }
+    else if(asize <= 256)
+    {
+        index = 6;
+    }
+    else if(asize <= 512)
+    {
+        index = 7;
+    }
+    else if(asize <= 1024)
+    {
+        index = 8;
+    }
+    else if(asize <= 4096)
+    {
+        index = 9;
+    }
+    else if(asize <= 8192)
+    {
+        index = 10;
+    }
+    else if(asize <= 16400)
+    {
+        index = 11;
+    }
+    else if(asize <= 24000)
+    {
+        index = 12;
+    }
+    else if(asize <= 31000)
+    {
+        index = 13;
+    }
+    else if(asize <= 62000)
+    {
+        index = 14;
+    }
+    else
+    {
+        index = 15;
+    }
+    return index;
 }
 
 
@@ -642,6 +771,7 @@ static size_t extract_size(word_t word)
  */
 static size_t get_size(block_t *block)
 {
+    assert(block != NULL);
     return extract_size(block->header);
 }
 
