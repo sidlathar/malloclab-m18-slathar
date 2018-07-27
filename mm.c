@@ -135,6 +135,7 @@ static bool get_alloc(block_t *block);
 
 static void write_header(block_t *block, size_t size, bool alloc);
 static void write_footer(block_t *block, size_t size, bool alloc);
+static void write_next_header(block_t *block, size_t size, bool alloc);
 
 static block_t *payload_to_header(void *bp);
 static void *header_to_payload(block_t *block);
@@ -166,6 +167,9 @@ bool mm_init(void)
 
     start[0] = pack(0, true); // Prologue footer
     start[1] = pack(0, true); // Epilogue header
+
+    start[1] = start[1] | 0x2;
+
     // Heap starts with first "block header", currently the epilogue footer
     heap_start = (block_t *) &(start[1]);
 
@@ -189,6 +193,7 @@ bool mm_init(void)
  */
 void *malloc(size_t size) 
 {
+    printf("here \n");
     dbg_requires(mm_checkheap(__LINE__));
     size_t asize;      // Adjusted block size
     size_t extendsize; // Amount to extend heap if no fit is found
@@ -207,7 +212,7 @@ void *malloc(size_t size)
     }
 
     // Adjust block size to include overhead and to meet alignment requirements
-    asize = round_up(size + dsize, dsize);
+    asize = round_up(size + wsize, dsize);
 
     // Search the free list for a fit
     block = find_seg_fit(asize);
@@ -245,6 +250,7 @@ void free(void *bp)
     size_t size = get_size(block);
 
     write_header(block, size, false);
+    write_next_header(block, size, false);
     write_footer(block, size, false);
 
     coalesce(block);
@@ -338,7 +344,7 @@ static block_t *extend_heap(size_t size)
     block_t *block =  payload_to_header(bp);
   
     write_header(block, size, false);
-   
+    block -> header = block -> header | 0x2;
     write_footer(block, size, false);
 
     // Create new epilogue header
@@ -348,27 +354,6 @@ static block_t *extend_heap(size_t size)
     // Coalesce in case the previous block was free
     return coalesce(block);
 }
-
-// static void add_to_front(block_t* block, size_t place_index)
-// {
-//     //block_t* list = free_list_start[place_index];
-
-//     /* change next and prev pointers for new free_list_root */
-//         if(free_list_start[place_index] == NULL)
-//         {
-//             free_list_start[place_index] = block;
-//             free_list_start[place_index] -> prev = NULL;
-//             free_list_start[place_index] -> next = NULL;
-//         }
-//         else
-//         {
-//             block -> next = free_list_start[place_index];
-//             block -> prev = free_list_start[place_index] -> prev; //Should be null
-//             free_list_start[place_index] -> prev = block;
-//             free_list_start[place_index] = block;
-//         }
-//         return;
-// }
 
 static void add_to_front(block_t* block, size_t place_index)
 {
@@ -406,6 +391,7 @@ static void change_connections(block_t* block, size_t change_index)
         {
             free_list_start[change_index] = block -> next;
         }
+        assert(block -> next != NULL);
         block -> next -> prev = block -> prev;
         block -> prev -> next = block -> next;
     }
@@ -419,12 +405,27 @@ static void change_connections(block_t* block, size_t change_index)
  */
 static block_t *coalesce(block_t * block) 
 {
+    // assert(block -> next != NULL);
+    // assert(block ->prev != NULL);
+    // printf("new\n");
     block_t *block_next = find_next(block);
-    block_t *block_prev = find_prev(block);
-
-    bool prev_alloc = extract_alloc(*(find_prev_footer(block)));
+    block_t *block_prev = NULL;
     bool next_alloc = get_alloc(block_next);
+    bool prev_alloc = true;
+    //assert(block_next -> next != NULL);
+    
+    word_t head = block -> header;
     size_t size = get_size(block);
+    printf("newvqevv\n");
+
+    /* check if prev alloc bit is set */
+    if((head & 0x2) == 0x0) 
+    {
+        block_prev = find_prev(block);
+        prev_alloc = false;
+        printf("newvqevv2\n");
+    }
+
 
     size_t merge_index;
     merge_index = find_best_index(size);
@@ -432,12 +433,13 @@ static block_t *coalesce(block_t * block)
     if (prev_alloc && next_alloc)              // Case 1
     {
         add_to_front(block, merge_index);
-        
+        printf("here3\n");
         return block;
     }
 
     else if (prev_alloc && !next_alloc)        // Case 2
     {
+        printf("here\n");
         /* restore connections before splice */
         size_t next_size = get_size(block_next);
         size_t next_index = find_best_index(next_size);
@@ -454,8 +456,11 @@ static block_t *coalesce(block_t * block)
 
     else if (!prev_alloc && next_alloc)        // Case 3
     {
+        printf("here2\n");
         size_t prev_size = get_size(block_prev);
         size_t prev_index = find_best_index(prev_size);
+        printf("here4\n");
+        assert(block_prev -> next != NULL);
         change_connections(block_prev, prev_index);
 
         /* write header and footer for new merged block */
@@ -502,7 +507,10 @@ static void place(block_t *block, size_t asize)
     {
         block_t *block_next;
         write_header(block, asize, true);
-        write_footer(block, asize, true);
+        write_next_header(block, asize, true);
+        //REMOVE
+        //write_footer(block, asize, true);
+        //REMOVE
         change_connections(block, list_index);
 
         block_next = find_next(block);
@@ -514,7 +522,10 @@ static void place(block_t *block, size_t asize)
     else
     { 
         write_header(block, csize, true);
-        write_footer(block, csize, true);
+        write_next_header(block, csize, true);
+        //REMOVE
+        //write_footer(block, csize, true);
+        //REMOVE
         change_connections(block, list_index);
     }
 }
@@ -628,63 +639,63 @@ bool mm_checkheap(int line)
 static size_t find_best_index(size_t asize)
 {
     size_t index = 0;
-    if(asize <= 32)
+    if(asize == 32)
     {
         index = 0;
     }
-    else if(asize <= 48)
+    else if(asize <= 64)
     {
         index = 1;
     }
-    else if(asize <= 64)
+    else if(asize <= 161)
     {
         index = 2;
     }
-    else if(asize <= 72)
+    else if(asize <= 200)
     {
         index = 3;
     }
-    else if(asize <= 96)
+    else if(asize <= 290)
     {
         index = 4;
     }
-    else if(asize <= 128)
+    else if(asize <= 350)
     {
         index = 5;
     }
-    else if(asize <= 256)
+    else if(asize <= 550)
     {
         index = 6;
     }
-    else if(asize <= 512)
+    else if(asize <= 760)
     {
         index = 7;
     }
-    else if(asize <= 1024)
+    else if(asize <= 1100)
     {
         index = 8;
     }
-    else if(asize <= 4096)
+    else if(asize <= 4140)
     {
         index = 9;
     }
-    else if(asize <= 8192)
+    else if(asize <= 8240)
     {
         index = 10;
     }
-    else if(asize <= 16400)
+    else if(asize <= 16433)
     {
         index = 11;
     }
-    else if(asize <= 24000)
+    else if(asize <= 24033)
     {
         index = 12;
     }
-    else if(asize <= 31000)
+    else if(asize <= 31033)
     {
         index = 13;
     }
-    else if(asize <= 62000)
+    else if(asize <= 62033)
     {
         index = 14;
     }
@@ -741,6 +752,7 @@ static size_t round_up(size_t size, size_t n)
 {
     return (n * ((size + (n-1)) / n));
 }
+
 
 /*
  * pack: returns a header reflecting a specified size and its alloc status.
@@ -807,6 +819,23 @@ static bool get_alloc(block_t *block)
  * write_header: given a block and its size and allocation status,
  *               writes an appropriate value to the block header.
  */
+static void write_next_header(block_t *block, size_t size, bool alloc)
+{
+    block_t *block_next = (block_t *)(((char *)block) + size);
+    if(alloc)
+    {
+        block_next->header = (block_next->header | 0x2);
+    }
+    else
+    {
+        block_next->header = (block_next->header & (~0x2));
+    }  
+}
+
+/*
+ * write_header: given a block and its size and allocation status,
+ *               writes an appropriate value to the block header.
+ */
 static void write_header(block_t *block, size_t size, bool alloc)
 {
     
@@ -839,6 +868,19 @@ static block_t *find_next(block_t *block)
     dbg_ensures(block_next != NULL);
     return block_next;
 }
+
+// static word_t *find_prev_header(block_t *block)
+// {
+//     // Compute previous footer position as one word before the header
+//     while(true)
+//     {
+//         if(extract_alloc( (&(block->header)) - i ))
+//         {
+//             return (&(block->header)) - i;
+//         }
+//     }
+
+// }
 
 /*
  * find_prev_footer: returns the footer of the previous block.
