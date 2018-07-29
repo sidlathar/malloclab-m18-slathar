@@ -75,6 +75,7 @@ static const size_t NUM_LISTS = 16;
 
 static const word_t alloc_mask = 0x1;
 static const word_t size_mask = ~(word_t)0xF;
+static bool IS_INIT = false;
 
 
 typedef struct block
@@ -124,7 +125,7 @@ static block_t *coalesce(block_t *block);
 
 static size_t max(size_t x, size_t y);
 static size_t round_up(size_t size, size_t n);
-static word_t pack(size_t size, bool alloc);
+static word_t pack(size_t size, bool alloc, word_t header);
 
 static size_t extract_size(word_t header);
 static size_t get_size(block_t *block);
@@ -165,19 +166,21 @@ bool mm_init(void)
         return false;
     }
 
-    start[0] = pack(0, true); // Prologue footer
-    start[1] = pack(0, true); // Epilogue header
+    start[0] = pack(0, true, 0); // Prologue footer
+    start[1] = pack(0, true, 0); // Epilogue header
 
     start[1] = start[1] | 0x2;
 
     // Heap starts with first "block header", currently the epilogue footer
     heap_start = (block_t *) &(start[1]);
+    IS_INIT = true;
 
     // Extend the empty heap with a free block of chunksize bytes
     if (extend_heap(chunksize) == NULL)
     {
         return false;
     }
+    IS_INIT = false;
 
     /* Initialize Free Lists */
     for(size_t list_index = 0; list_index < NUM_LISTS; list_index++)
@@ -193,7 +196,7 @@ bool mm_init(void)
  */
 void *malloc(size_t size) 
 {
-    printf("here \n");
+    printf("mallox \n");
     dbg_requires(mm_checkheap(__LINE__));
     size_t asize;      // Adjusted block size
     size_t extendsize; // Amount to extend heap if no fit is found
@@ -241,6 +244,7 @@ void *malloc(size_t size)
  */
 void free(void *bp)
 {
+    //printf("free\n");
     if (bp == NULL)
     {
         return;
@@ -250,7 +254,7 @@ void free(void *bp)
     size_t size = get_size(block);
 
     write_header(block, size, false);
-    write_next_header(block, size, false);
+    //write_next_header(block, size, false);
     write_footer(block, size, false);
 
     coalesce(block);
@@ -330,6 +334,7 @@ void *calloc(size_t elements, size_t size)
  */
 static block_t *extend_heap(size_t size) 
 {
+
     void *bp;
 
     // Allocate an even number of words to maintain alignment
@@ -344,12 +349,21 @@ static block_t *extend_heap(size_t size)
     block_t *block =  payload_to_header(bp);
   
     write_header(block, size, false);
-    block -> header = block -> header | 0x2;
+    // if(IS_INIT)
+    // {
+    //     block -> header = block -> header | 0x2;
+    // }
+    // else
+    // {
+    //     block -> header = block -> header & (~0x2);
+    // }
     write_footer(block, size, false);
 
     // Create new epilogue header
     block_t *block_next = find_next(block);
     write_header(block_next, 0, true);
+
+    block -> header = block -> header | 0x2;
 
     // Coalesce in case the previous block was free
     return coalesce(block);
@@ -358,8 +372,16 @@ static block_t *extend_heap(size_t size)
 static void add_to_front(block_t* block, size_t place_index)
 {
     //block_t* list = free_list_start[place_index];
-
     /* change next and prev pointers for new free_list_root */
+        if(get_size(block) == 0 || get_alloc(block) == 1)
+        {
+            //printf("INVALID\n");
+            return;
+        }
+        assert(block != NULL);
+        //printf("INVALID33\n");
+        assert(mm_checkheap(__LINE__));
+        //printf("INVALID44\n");
         if(free_list_start[place_index] == NULL)
         {
             free_list_start[place_index] = block;
@@ -370,9 +392,12 @@ static void add_to_front(block_t* block, size_t place_index)
         {
             block -> next = free_list_start[place_index];
             block -> prev = free_list_start[place_index] -> prev; 
+            assert(block -> next != NULL);
+            assert(block -> prev != NULL);
             free_list_start[place_index] -> prev -> next  = block;
             free_list_start[place_index] -> prev = block;
         }
+        assert(mm_checkheap(__LINE__));
         return;
 }
 
@@ -380,7 +405,7 @@ static void add_to_front(block_t* block, size_t place_index)
 static void change_connections(block_t* block, size_t change_index)
 {
     //block_t* list = free_list_start[change_index];
-
+   //
     if(block -> prev == block && block-> next == block)
     {
         free_list_start[change_index] = NULL;
@@ -392,38 +417,33 @@ static void change_connections(block_t* block, size_t change_index)
             free_list_start[change_index] = block -> next;
         }
         assert(block -> next != NULL);
+        assert(block -> next  != NULL);
+        //assert(block -> next -> header == 0); //not a alloc or free block
+        assert(block -> prev  != NULL);
         block -> next -> prev = block -> prev;
         block -> prev -> next = block -> next;
     }
-    
     return;
 }
-
 
 /*
  * <what does coalesce do?>
  */
 static block_t *coalesce(block_t * block) 
 {
-    // assert(block -> next != NULL);
-    // assert(block ->prev != NULL);
-    // printf("new\n");
     block_t *block_next = find_next(block);
     block_t *block_prev = NULL;
     bool next_alloc = get_alloc(block_next);
     bool prev_alloc = true;
-    //assert(block_next -> next != NULL);
     
     word_t head = block -> header;
     size_t size = get_size(block);
-    printf("newvqevv\n");
 
     /* check if prev alloc bit is set */
     if((head & 0x2) == 0x0) 
     {
         block_prev = find_prev(block);
         prev_alloc = false;
-        printf("newvqevv2\n");
     }
 
 
@@ -432,14 +452,15 @@ static block_t *coalesce(block_t * block)
 
     if (prev_alloc && next_alloc)              // Case 1
     {
+        write_header(block, size, false);
+        write_footer(block, size, false);
+        write_next_header(block, size, false);
         add_to_front(block, merge_index);
-        printf("here3\n");
         return block;
     }
 
     else if (prev_alloc && !next_alloc)        // Case 2
     {
-        printf("here\n");
         /* restore connections before splice */
         size_t next_size = get_size(block_next);
         size_t next_index = find_best_index(next_size);
@@ -447,6 +468,7 @@ static block_t *coalesce(block_t * block)
 
         size += get_size(block_next);
         write_header(block, size, false);
+        write_next_header(block, size, false);
         write_footer(block, size, false);
 
         /* change next and prev pointers for new free_list_root */
@@ -456,16 +478,14 @@ static block_t *coalesce(block_t * block)
 
     else if (!prev_alloc && next_alloc)        // Case 3
     {
-        printf("here2\n");
         size_t prev_size = get_size(block_prev);
         size_t prev_index = find_best_index(prev_size);
-        printf("here4\n");
-        assert(block_prev -> next != NULL);
         change_connections(block_prev, prev_index);
 
         /* write header and footer for new merged block */
         size += get_size(block_prev);
         write_header(block_prev, size, false);
+        write_next_header(block, size, false);
         write_footer(block_prev, size, false);
         block = block_prev;
 
@@ -486,6 +506,7 @@ static block_t *coalesce(block_t * block)
          
         size += get_size(block_next) + get_size(block_prev);
         write_header(block_prev, size, false);
+        write_next_header(block, size, false);
         write_footer(block_prev, size, false);
         block = block_prev;
 
@@ -630,8 +651,33 @@ bool mm_checkheap(int line)
      * (Delete these lines!)
      */
 
-    (void)line; // delete this line; it's a placeholder so that the compiler
-                // will not warn you about an unused variable.
+    block_t *check_list = NULL;
+
+    for(size_t index = 0; index < NUM_LISTS; index++)
+    {
+        if(free_list_start[index] == NULL)
+        {
+            continue;
+        }
+        assert(free_list_start[index] -> next -> prev == free_list_start[index]);
+        assert(free_list_start[index] -> prev -> next == free_list_start[index]);
+        //printf("%lu \n", (free_list_start[index] -> header & alloc_mask));
+        //printf("index %zu \n", index);
+        //printf("ss %zu \n", get_size(free_list_start[index]));
+        //printf("head %lx \n", free_list_start[index] -> header);
+        assert((get_alloc(free_list_start[index])) == 0);
+        // assert((free_list_start[index] -> footer & alloc_mask) == 0);
+        // assert(extract_size(free_list_start[index] -> footer) == extract_size(free_list_start[index] -> header));
+
+        for(check_list = free_list_start[index] -> next; check_list != NULL && check_list != free_list_start[index]; check_list = check_list -> next)
+        {
+            assert(check_list -> prev -> next == check_list);
+            assert(check_list -> next -> prev == check_list);
+            assert((check_list -> header & alloc_mask) == 0);
+            // assert((check_list -> footer & alloc_mask) == 0);
+            // assert(extract_size(check_list -> footer) == extract_size(check_list -> header));
+        }
+    }
     return true;
 
 }
@@ -758,13 +804,20 @@ static size_t round_up(size_t size, size_t n)
  * pack: returns a header reflecting a specified size and its alloc status.
  *       If the block is allocated, the lowest bit is set to 1, and 0 otherwise.
  */
-static word_t pack(size_t size, bool alloc)
+static word_t pack(size_t size, bool alloc, word_t header)
 {
-  
-    word_t w = alloc ? (size | alloc_mask) : size;
-   
-    return w;
+    word_t w;
+    if((header & 0x2) == 0x2)
+    {
+        w = alloc ? (size | alloc_mask) : size;
+        w = w | 0x2;
+    }
+    else
+    {
+        w = alloc ? (size | alloc_mask) : size;
+    }
 
+    return w;
 }
 
 
@@ -794,7 +847,7 @@ static size_t get_size(block_t *block)
 static word_t get_payload_size(block_t *block)
 {
     size_t asize = get_size(block);
-    return asize - dsize;
+    return asize - wsize;  //changed this
 }
 
 /*
@@ -821,7 +874,7 @@ static bool get_alloc(block_t *block)
  */
 static void write_next_header(block_t *block, size_t size, bool alloc)
 {
-    block_t *block_next = (block_t *)(((char *)block) + size);
+    block_t *block_next = find_next(block);
     if(alloc)
     {
         block_next->header = (block_next->header | 0x2);
@@ -839,7 +892,7 @@ static void write_next_header(block_t *block, size_t size, bool alloc)
 static void write_header(block_t *block, size_t size, bool alloc)
 {
     
-    block->header = pack(size, alloc);
+    block->header = pack(size, alloc, block->header);
   
 }
 
@@ -852,7 +905,7 @@ static void write_header(block_t *block, size_t size, bool alloc)
 static void write_footer(block_t *block, size_t size, bool alloc)
 {
     word_t *footerp = (word_t *)((block->payload) + get_size(block) - dsize);
-    *footerp = pack(size, alloc);
+    *footerp = pack(size, alloc, 0);
 }
 
 
