@@ -1,22 +1,5 @@
 /* SIDDHANTH LATHAR SLATHAR */
-/*
- ******************************************************************************
- *                               mm-baseline.c                                *
- *           64-bit struct-based implicit free list memory allocator          *
- *                  15-213: Introduction to Computer Systems                  *
- *                                                                            *
- *  ************************************************************************  *
- *                     insert your documentation here. :)                     *
- *                                                                            *
- *  ************************************************************************  *
- *  ** ADVICE FOR STUDENTS. **                                                *
- *  Step 0: Please read the writeup!                                          *
- *  Step 1: Write your heap checker. Write. Heap. checker.                    *
- *  Step 2: Place your contracts / debugging assert statements.               *
- *  Good luck, and have fun!                                                  *
- *                                                                            *
- ******************************************************************************
- */
+
 
 /* Do not change the following! */
 
@@ -75,18 +58,19 @@ static const size_t NUM_LISTS = 16;
 
 static const word_t alloc_mask = 0x1;
 static const word_t size_mask = ~(word_t)0xF;
-static bool IS_INIT = false;
 
 
 typedef struct block
 {
-    /* Header contains size + allocation flag */
+    /* Header contains size + allocation flag  */
     word_t header;
     
     /* Pointers were causing alignment issues so putting them in a union with
-     * payload will allow them to never co-exist since payload will always be greater then 
-     or equal to 4*wsize */
-    
+     * payload will allow them to never co-exist since payload will always be 
+     * greater then or equal to 4*wsize 
+     */
+
+    /* This contains payload/pointers to next/prev block if a free block */
     union
     {
         /*
@@ -116,6 +100,8 @@ static block_t *heap_start = NULL;
 static  block_t* free_list_start[NUM_LISTS];
 
 bool mm_checkheap(int lineno);
+bool check_free_list();
+bool check_bounds();
 
 /* Function prototypes for internal helper routines */
 static block_t *extend_heap(size_t size);
@@ -125,7 +111,7 @@ static block_t *coalesce(block_t *block);
 
 static size_t max(size_t x, size_t y);
 static size_t round_up(size_t size, size_t n);
-static word_t pack(size_t size, bool alloc, word_t header);
+static word_t pack(size_t size, bool alloc);
 
 static size_t extract_size(word_t header);
 static size_t get_size(block_t *block);
@@ -136,7 +122,6 @@ static bool get_alloc(block_t *block);
 
 static void write_header(block_t *block, size_t size, bool alloc);
 static void write_footer(block_t *block, size_t size, bool alloc);
-static void write_next_header(block_t *block, size_t size, bool alloc);
 
 static block_t *payload_to_header(void *bp);
 static void *header_to_payload(block_t *block);
@@ -147,13 +132,15 @@ static block_t *find_prev(block_t *block);
 
 static void add_to_front(block_t* block, size_t place_index);
 static void change_connections(block_t* block, size_t change_index);
-// static block_t *find_free_fit(size_t asize);
-// static block_t *find_best_fit(size_t asize);
 static block_t *find_seg_fit(size_t asize);
 static size_t find_best_index(size_t asize);
+static size_t size_from_index(size_t index);
+
 
 /*
- * <what does mm_init do?>
+ * Initializes Prologue header, Prologue footer and epilogue footer, assigns
+ * the start of the heap, extends heap to chunksize and then initializes free
+ * list pointers.
  */
 bool mm_init(void) 
 {
@@ -166,21 +153,16 @@ bool mm_init(void)
         return false;
     }
 
-    start[0] = pack(0, true, 0); // Prologue footer
-    start[1] = pack(0, true, 0); // Epilogue header
-
-    start[1] = start[1] | 0x2;
-
+    start[0] = pack(0, true); // Prologue footer
+    start[1] = pack(0, true); // Epilogue header
     // Heap starts with first "block header", currently the epilogue footer
     heap_start = (block_t *) &(start[1]);
-    IS_INIT = true;
 
     // Extend the empty heap with a free block of chunksize bytes
     if (extend_heap(chunksize) == NULL)
     {
         return false;
     }
-    IS_INIT = false;
 
     /* Initialize Free Lists */
     for(size_t list_index = 0; list_index < NUM_LISTS; list_index++)
@@ -192,11 +174,11 @@ bool mm_init(void)
 }
 
 /*
- * <what does mmalloc do?>
+ * Handles malloc request checking for block of required size in the respective
+ * free list. Returns NULL if request wasn't completed.
  */
 void *malloc(size_t size) 
 {
-    printf("mallox \n");
     dbg_requires(mm_checkheap(__LINE__));
     size_t asize;      // Adjusted block size
     size_t extendsize; // Amount to extend heap if no fit is found
@@ -215,9 +197,9 @@ void *malloc(size_t size)
     }
 
     // Adjust block size to include overhead and to meet alignment requirements
-    asize = round_up(size + wsize, dsize);
+    asize = round_up(size + dsize, dsize);
 
-    // Search the free list for a fit
+    // Search the respective free list for a fit
     block = find_seg_fit(asize);
 
     // If no fit is found, request more memory, and then and place the block
@@ -240,11 +222,12 @@ void *malloc(size_t size)
 } 
 
 /*
- * <what does free do?>
+ * Takes pointer to a payload and then free's 
+ * an allocted block from memory, and passes it to coalesce to see if 
+ * merging with another free block is possible.
  */
 void free(void *bp)
 {
-    //printf("free\n");
     if (bp == NULL)
     {
         return;
@@ -254,14 +237,14 @@ void free(void *bp)
     size_t size = get_size(block);
 
     write_header(block, size, false);
-    //write_next_header(block, size, false);
     write_footer(block, size, false);
 
     coalesce(block);
 }
 
 /*
- * <what does realloc do?>
+ * Takes pointer to a payload and size of reallocation and then
+ * reallocates a given block to a bigger size, then copys the payload over.
  */
 void *realloc(void *ptr, size_t size)
 {
@@ -330,11 +313,10 @@ void *calloc(size_t elements, size_t size)
 /******** The remaining content below are helper and debug routines ********/
 
 /*
- * <what does extend_heap do?>
+ * Takes in size and then increases heap size accordingly rounding it to dsize
  */
 static block_t *extend_heap(size_t size) 
 {
-
     void *bp;
 
     // Allocate an even number of words to maintain alignment
@@ -349,113 +331,91 @@ static block_t *extend_heap(size_t size)
     block_t *block =  payload_to_header(bp);
   
     write_header(block, size, false);
-    // if(IS_INIT)
-    // {
-    //     block -> header = block -> header | 0x2;
-    // }
-    // else
-    // {
-    //     block -> header = block -> header & (~0x2);
-    // }
+   
     write_footer(block, size, false);
 
     // Create new epilogue header
     block_t *block_next = find_next(block);
     write_header(block_next, 0, true);
 
-    block -> header = block -> header | 0x2;
-
     // Coalesce in case the previous block was free
     return coalesce(block);
 }
 
+/* Takes in a pointer to a free block and free list index for 
+ * that block then Adds the free block to the place before free_list_start. 
+ * The free_list_start keeps moving to the end of the list and 
+ * then back again so the list remains circular.
+ */
 static void add_to_front(block_t* block, size_t place_index)
 {
-    //block_t* list = free_list_start[place_index];
-    /* change next and prev pointers for new free_list_root */
-        if(get_size(block) == 0 || get_alloc(block) == 1)
-        {
-            //printf("INVALID\n");
-            return;
-        }
-        assert(block != NULL);
-        //printf("INVALID33\n");
-        assert(mm_checkheap(__LINE__));
-        //printf("INVALID44\n");
+    /* If list is empty then make block the start of it */
         if(free_list_start[place_index] == NULL)
         {
             free_list_start[place_index] = block;
             free_list_start[place_index] -> next = block;
             free_list_start[place_index] -> prev = block;
         }
+        /* otherwise add it to before the free_list_start */
         else
         {
             block -> next = free_list_start[place_index];
             block -> prev = free_list_start[place_index] -> prev; 
-            assert(block -> next != NULL);
-            assert(block -> prev != NULL);
             free_list_start[place_index] -> prev -> next  = block;
             free_list_start[place_index] -> prev = block;
         }
-        assert(mm_checkheap(__LINE__));
         return;
 }
 
-
+/* Takes in a pointer to free block and list index of that block then 
+ * removes it from the repective free list 
+ */
 static void change_connections(block_t* block, size_t change_index)
 {
-    //block_t* list = free_list_start[change_index];
-   //
+    /* If there is only one block in the free list then make list empty */
     if(block -> prev == block && block-> next == block)
     {
         free_list_start[change_index] = NULL;
     }
     else
     {
+        /* If block is the start of the list 
+         * then move the start to next block
+         */
         if(block == free_list_start[change_index])
         {
             free_list_start[change_index] = block -> next;
         }
-        assert(block -> next != NULL);
-        assert(block -> next  != NULL);
-        //assert(block -> next -> header == 0); //not a alloc or free block
-        assert(block -> prev  != NULL);
+        /* remove the block */
         block -> next -> prev = block -> prev;
         block -> prev -> next = block -> next;
     }
+    
     return;
 }
 
+
 /*
- * <what does coalesce do?>
+ * Takes in pointer to a free block and then tries 
+ * to merge it with adjacent free blocks if possible. 
+ * If a merge is possible it first removes the free block from its free_list
  */
 static block_t *coalesce(block_t * block) 
 {
     block_t *block_next = find_next(block);
-    block_t *block_prev = NULL;
+    block_t *block_prev = find_prev(block);
+
+    bool prev_alloc = extract_alloc(*(find_prev_footer(block)));
     bool next_alloc = get_alloc(block_next);
-    bool prev_alloc = true;
-    
-    word_t head = block -> header;
     size_t size = get_size(block);
-
-    /* check if prev alloc bit is set */
-    if((head & 0x2) == 0x0) 
-    {
-        block_prev = find_prev(block);
-        prev_alloc = false;
-    }
-
 
     size_t merge_index;
     merge_index = find_best_index(size);
 
     if (prev_alloc && next_alloc)              // Case 1
     {
-        write_header(block, size, false);
-        write_footer(block, size, false);
-        write_next_header(block, size, false);
         add_to_front(block, merge_index);
+        
         return block;
     }
 
@@ -468,16 +428,16 @@ static block_t *coalesce(block_t * block)
 
         size += get_size(block_next);
         write_header(block, size, false);
-        write_next_header(block, size, false);
         write_footer(block, size, false);
 
-        /* change next and prev pointers for new free_list_root */
+        /* add the new bigger block to the free list */
         size_t merge_index = find_best_index(size);
         add_to_front(block, merge_index);
     }
 
     else if (!prev_alloc && next_alloc)        // Case 3
     {
+        /* restore connections before splice */
         size_t prev_size = get_size(block_prev);
         size_t prev_index = find_best_index(prev_size);
         change_connections(block_prev, prev_index);
@@ -485,10 +445,10 @@ static block_t *coalesce(block_t * block)
         /* write header and footer for new merged block */
         size += get_size(block_prev);
         write_header(block_prev, size, false);
-        write_next_header(block, size, false);
         write_footer(block_prev, size, false);
         block = block_prev;
 
+        /* add the new bigger block to the free list */
         size_t merge_index = find_best_index(size);
         add_to_front(block, merge_index);
     }
@@ -506,10 +466,10 @@ static block_t *coalesce(block_t * block)
          
         size += get_size(block_next) + get_size(block_prev);
         write_header(block_prev, size, false);
-        write_next_header(block, size, false);
         write_footer(block_prev, size, false);
         block = block_prev;
 
+        /* add the new bigger block to the free list */
         size_t merge_index = find_best_index(size);
         add_to_front(block, merge_index);
     }
@@ -517,7 +477,10 @@ static block_t *coalesce(block_t * block)
 }
 
 /*
- * <what does place do?>
+ * Takes in ponter to free block and its size then
+ * markes the header and footer of the block as allocated, 
+ * inserts size in header and attemps to recycle unused 
+ * part of the free block
  */
 static void place(block_t *block, size_t asize)
 {
@@ -528,10 +491,7 @@ static void place(block_t *block, size_t asize)
     {
         block_t *block_next;
         write_header(block, asize, true);
-        write_next_header(block, asize, true);
-        //REMOVE
-        //write_footer(block, asize, true);
-        //REMOVE
+        write_footer(block, asize, true);
         change_connections(block, list_index);
 
         block_next = find_next(block);
@@ -543,67 +503,15 @@ static void place(block_t *block, size_t asize)
     else
     { 
         write_header(block, csize, true);
-        write_next_header(block, csize, true);
-        //REMOVE
-        //write_footer(block, csize, true);
-        //REMOVE
+        write_footer(block, csize, true);
         change_connections(block, list_index);
     }
 }
 
 /*
- * <what does find_fit do?>
- */
-static block_t *find_fit(size_t asize)
-{
-    block_t *block;
-
-    for (block = heap_start; get_size(block) > 0;
-                             block = find_next(block))
-    {
-
-        if (!(get_alloc(block)) && (asize <= get_size(block)))
-        {
-            return block;
-        }
-    }
-    return NULL; // no fit found
-}
-
-// /*
-//  * <what does find_fit do?>
-//  */
-// static block_t *find_best_fit(size_t asize)
-// {
-//     block_t *block;
-//     block_t *best_fit = NULL;
-
-//     size_t diff = 1;
-//     size_t size;
-
-//     for (block = free_list_start; (block != NULL); block = block -> next)
-//     {
-//         size = get_size(block);
-
-//         if ((asize <= size))
-//         {
-//             if((size - asize <= diff) || diff == 1)
-//             {
-//                 best_fit = block;
-//                 diff = size - asize;
-//                 if(diff <= threshold)
-//                 {
-//                     return best_fit;
-//                 }
-//             }
-//         }
-//     }
-//     return best_fit; // no fit found
-// }
-
-
-/*
- * <what does find_fit do?>
+ * Takes in size of allocation then finds a suitable list 
+ * for that size.  It then returns a pointer to a free block 
+ * of a size grater then or equal to asize.
  */
 static block_t *find_seg_fit(size_t asize)
 {
@@ -611,7 +519,8 @@ static block_t *find_seg_fit(size_t asize)
 
     block_t *block;
 
-    for(size_t list_index = min_start_index; list_index < NUM_LISTS; list_index++)
+    for(size_t list_index = min_start_index; 
+        list_index < NUM_LISTS; list_index++)
     {
         block = free_list_start[list_index];
         if(block == NULL)
@@ -623,7 +532,9 @@ static block_t *find_seg_fit(size_t asize)
                 return block;
             }
 
-        for (block = free_list_start[list_index] -> next; (block != NULL && block != free_list_start[list_index]); block = block -> next)
+        for (block = free_list_start[list_index] -> next; 
+                (block != NULL && block != free_list_start[list_index]);
+                     block = block -> next)
         {
             if ((asize <= get_size(block)))
             {
@@ -635,22 +546,13 @@ static block_t *find_seg_fit(size_t asize)
     return NULL; // no fit found
 }
 
-/* 
- * <what does your heap checker do?>
- * Please keep modularity in mind when you're writing the heap checker!
- */
-bool mm_checkheap(int line)  
-{ 
-    /* you will need to write the heap checker yourself. As a filler:
-     * one guacamole is equal to 6.02214086 x 10**23 guacas.
-     * one might even call it
-     * the avocado's number.
-     *
-     * Internal use only: If you mix guacamole on your bibimbap, 
-     * do you eat it with a pair of chopsticks, or with a spoon? 
-     * (Delete these lines!)
-     */
-
+/* Checks the following:
+* - All next/previous pointers are consistent,
+* - All free list pointers are between mem_heap_lo() and mem_heap_hi()
+* - All blocks in each list bucket fall within bucket size range 
+*/
+bool check_free_list()
+{
     block_t *check_list = NULL;
 
     for(size_t index = 0; index < NUM_LISTS; index++)
@@ -659,29 +561,234 @@ bool mm_checkheap(int line)
         {
             continue;
         }
-        assert(free_list_start[index] -> next -> prev == free_list_start[index]);
-        assert(free_list_start[index] -> prev -> next == free_list_start[index]);
-        //printf("%lu \n", (free_list_start[index] -> header & alloc_mask));
-        //printf("index %zu \n", index);
-        //printf("ss %zu \n", get_size(free_list_start[index]));
-        //printf("head %lx \n", free_list_start[index] -> header);
-        assert((get_alloc(free_list_start[index])) == 0);
-        // assert((free_list_start[index] -> footer & alloc_mask) == 0);
-        // assert(extract_size(free_list_start[index] -> footer) == extract_size(free_list_start[index] -> header));
-
-        for(check_list = free_list_start[index] -> next; check_list != NULL && check_list != free_list_start[index]; check_list = check_list -> next)
+        if(*(&(free_list_start[index] -> header)) 
+            > (unsigned long)mem_heap_hi())
         {
-            assert(check_list -> prev -> next == check_list);
-            assert(check_list -> next -> prev == check_list);
-            assert((check_list -> header & alloc_mask) == 0);
-            // assert((check_list -> footer & alloc_mask) == 0);
-            // assert(extract_size(check_list -> footer) == extract_size(check_list -> header));
+            return false;
+        }
+        if(free_list_start[index] -> next -> prev != free_list_start[index]) 
+        {
+            return false;
+        } 
+        if(free_list_start[index] -> prev -> next != free_list_start[index])
+        {
+            return false;
+        }
+        if((get_alloc(free_list_start[index])) != 0)
+        {
+            return false;
+        }
+        if (index != 15 && 
+            (get_size(free_list_start[index])
+                > size_from_index(index)))
+        {
+
+            return false;
+        }
+
+        for(check_list = free_list_start[index] -> next; 
+            check_list != NULL && check_list != free_list_start[index]; 
+            check_list = check_list -> next)
+        {
+            if(check_list -> prev -> next != check_list)
+            {
+                return false;
+            }
+            if(check_list -> next -> prev != check_list)
+            {
+                return false;
+            }
+            if((check_list -> header & alloc_mask) != 0)
+            {
+                return false;
+            }
+            if (index != 15 && 
+                get_size(check_list)
+                     > size_from_index(index))
+            {
+                return false;
+            }
         }
     }
     return true;
-
 }
 
+/* Counts free blocks by iterating through every block and traversing free list 
+ * by pointers and see if they match.
+ * Also checks the following:
+ * - coalescing: no two consecutive free blocks in the heap.
+ * - Check each block’s header and footer:
+ * - Check each block’s address alignment.
+ * - Checks heap bounderies
+ * - All next/previous pointers are consistent,
+ * - All free list pointers are between mem_heap_lo() and mem_heap_hi()
+ * - All blocks in each list bucket fall within bucket size range
+ */
+bool check_heap()
+{
+    /* Count free blocks on heap */
+    int num_free_heap = 0;
+    for(block_t *block = heap_start; block -> header != 1 ; 
+            block = find_next(block))
+    {
+        if(get_size(block) > 0 && (!get_alloc(block)))
+        {
+            num_free_heap++;
+        }
+
+        if((!get_alloc(block))) 
+        {
+            if(get_alloc(find_next(block)) || (get_alloc(find_prev(block))))
+            {
+                assert(true);
+            }
+            else
+            {
+                return false;
+            }
+        }
+    }
+    
+    /* Count free blocks on free lists */
+    block_t *check_list = NULL;
+    int num_free_list = 0;
+
+    for(size_t index = 0; index < NUM_LISTS; index++)
+    {
+        if(free_list_start[index] == NULL)
+        {
+            continue;
+        }
+        else
+        {
+            num_free_list++;
+        }
+        for(check_list = free_list_start[index] -> next; 
+            check_list != NULL && check_list != free_list_start[index]; 
+            check_list = check_list -> next)
+        {
+            num_free_list++;
+        }
+    }
+
+    /* Adjustment for some small uncoalased blocks by design */
+    return(num_free_list - num_free_heap <= 1);
+}
+
+/* Checks epilogue and prologue blocks */
+bool check_bounds()
+{
+    return (*(word_t*)((&(heap_start -> header)) - 1) == 1);
+}
+
+/* Heap checker does that following:
+ * - Checks epilogue and prologue blocks
+ * - Counts free blocks by iterating through every block and traversing 
+ * free list by pointers and see if they match.
+ * - coalescing: no two consecutive free blocks in the heap.
+ * - Check each block’s header and footer:
+ * - Check each block’s address alignment.
+ * - Checks heap bounderies
+
+ * It uses three helper functions. Their documentation is provided where they 
+ * are written.
+ */
+bool mm_checkheap(int line)  
+{ 
+    if(!check_free_list())
+    {
+        printf("HEAP CHECK FAILED ON FREE LISTS. ");
+        printf("Caller @line %d\n", line);
+        return false;
+    }
+    if(!check_bounds())
+    {
+        printf("HEAP CHECK FAILED ON BOUND TESTS. ");
+        printf("Caller @line %d\n", line);
+        return false;
+    }
+    if(!check_heap())
+    {
+        printf("HEAP CHECK FAILED ON HEAP TEST. ");
+        printf("Caller @line %d\n", line);
+        return false;
+    }
+    return true;
+}
+
+/* Takes in index of a list and returns appropriate size class */
+static size_t size_from_index(size_t index)
+{
+    size_t size = 0;
+
+    if(index == 0)
+    {
+        size = 32;
+    }
+    else if(index == 1)
+    {
+        size = 64;
+    }
+    else if(index == 2)
+    {
+        size = 161;
+    }
+    else if(index == 3)
+    {
+        size = 200;
+    }
+    else if(index == 4)
+    {
+        size = 290;
+    }
+    else if(index == 5)
+    {
+        size = 350;
+    }
+    else if(index == 6)
+    {
+        size = 550;
+    }
+    else if(index == 7)
+    {
+        size = 760;
+    }
+    else if(index == 8)
+    {
+        size = 1100;
+    }
+    else if(index == 9)
+    {
+        size = 4140;
+    }
+    else if(index == 10)
+    {
+        size = 8240;
+    }
+    else if(index == 11)
+    {
+        size = 16433;
+    }
+    else if(index == 12)
+    {
+        size = 34033;
+    }
+    else if(index == 13)
+    {
+        size = 31033;
+    }
+    else if(index == 14)
+    {
+        size = 62033;
+    }
+    else
+    {
+        size = 0;
+    }
+    return size;
+}
+
+/* Takes in size of a block and returns appropriate free list index */
 static size_t find_best_index(size_t asize)
 {
     size_t index = 0;
@@ -799,25 +906,17 @@ static size_t round_up(size_t size, size_t n)
     return (n * ((size + (n-1)) / n));
 }
 
-
 /*
  * pack: returns a header reflecting a specified size and its alloc status.
  *       If the block is allocated, the lowest bit is set to 1, and 0 otherwise.
  */
-static word_t pack(size_t size, bool alloc, word_t header)
+static word_t pack(size_t size, bool alloc)
 {
-    word_t w;
-    if((header & 0x2) == 0x2)
-    {
-        w = alloc ? (size | alloc_mask) : size;
-        w = w | 0x2;
-    }
-    else
-    {
-        w = alloc ? (size | alloc_mask) : size;
-    }
-
+  
+    word_t w = alloc ? (size | alloc_mask) : size;
+   
     return w;
+
 }
 
 
@@ -847,7 +946,7 @@ static size_t get_size(block_t *block)
 static word_t get_payload_size(block_t *block)
 {
     size_t asize = get_size(block);
-    return asize - wsize;  //changed this
+    return asize - dsize;
 }
 
 /*
@@ -872,27 +971,10 @@ static bool get_alloc(block_t *block)
  * write_header: given a block and its size and allocation status,
  *               writes an appropriate value to the block header.
  */
-static void write_next_header(block_t *block, size_t size, bool alloc)
-{
-    block_t *block_next = find_next(block);
-    if(alloc)
-    {
-        block_next->header = (block_next->header | 0x2);
-    }
-    else
-    {
-        block_next->header = (block_next->header & (~0x2));
-    }  
-}
-
-/*
- * write_header: given a block and its size and allocation status,
- *               writes an appropriate value to the block header.
- */
 static void write_header(block_t *block, size_t size, bool alloc)
 {
     
-    block->header = pack(size, alloc, block->header);
+    block->header = pack(size, alloc);
   
 }
 
@@ -905,7 +987,7 @@ static void write_header(block_t *block, size_t size, bool alloc)
 static void write_footer(block_t *block, size_t size, bool alloc)
 {
     word_t *footerp = (word_t *)((block->payload) + get_size(block) - dsize);
-    *footerp = pack(size, alloc, 0);
+    *footerp = pack(size, alloc);
 }
 
 
